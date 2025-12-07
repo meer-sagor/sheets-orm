@@ -2,6 +2,9 @@ import { google, sheets_v4 } from 'googleapis';
 import NodeCache from 'node-cache';
 import { EntityMetadata, ColumnMetadata, EntitySchema } from './decorators';
 import { QueryBuilder } from './QueryBuilder';
+import { MigrationManager } from './migrations';
+import { TransactionManager, Transaction } from './transactions';
+import { getRelationsMetadata, RelationMetadata, LoadRelationsOptions } from './relations';
 
 export interface SheetsORMConfig {
   credentials: {
@@ -14,6 +17,8 @@ export interface SheetsORMConfig {
     checkperiod?: number;
     useClones?: boolean;
   };
+  enableMigrations?: boolean; // Enable migration tracking
+  enableTransactions?: boolean; // Enable transaction support
 }
 
 export class SheetsORM {
@@ -21,6 +26,9 @@ export class SheetsORM {
   private spreadsheetId: string;
   private cache: NodeCache;
   private entities: Map<string, EntityMetadata> = new Map();
+  private repositories: Map<string, Repository<any>> = new Map();
+  private migrationManager?: MigrationManager;
+  private transactionManager?: TransactionManager;
 
   constructor(config: SheetsORMConfig) {
     // Initialize Google Sheets API
@@ -40,17 +48,36 @@ export class SheetsORM {
       checkperiod: config.cacheConfig?.checkperiod || 60,
       useClones: config.cacheConfig?.useClones ?? true,
     });
+
+    // Initialize migration manager if enabled
+    if (config.enableMigrations !== false) {
+      this.migrationManager = new MigrationManager(this.sheets, this.spreadsheetId);
+    }
+
+    // Initialize transaction manager if enabled
+    if (config.enableTransactions !== false) {
+      this.transactionManager = new TransactionManager(
+        this.sheets,
+        this.spreadsheetId,
+        this.cache,
+        this.repositories
+      );
+    }
   }
 
   /**
    * Register an entity with the ORM
    */
   registerEntity<T>(entityClass: new () => T, schema: EntitySchema): void {
-    const metadata: EntityMetadata = {
+    const prototype = entityClass.prototype;
+    const relations = getRelationsMetadata(prototype) || [];
+
+    const metadata: EntityMetadata & { relations?: RelationMetadata[] } = {
       name: schema.name,
       sheetName: schema.sheetName || schema.name,
       columns: schema.columns,
       primaryKey: schema.columns.find(col => col.primary)?.propertyName || 'id',
+      relations,
     };
 
     this.entities.set(schema.name, metadata);
@@ -61,13 +88,92 @@ export class SheetsORM {
    */
   getRepository<T>(entityClass: new () => T): Repository<T> {
     const entityName = entityClass.name;
+    
+    // Return cached repository if exists
+    if (this.repositories.has(entityName)) {
+      return this.repositories.get(entityName)!;
+    }
+
     const metadata = this.entities.get(entityName);
 
     if (!metadata) {
       throw new Error(`Entity ${entityName} is not registered`);
     }
 
-    return new Repository<T>(this.sheets, this.spreadsheetId, this.cache, metadata);
+    const repository = new Repository<T>(
+      this.sheets,
+      this.spreadsheetId,
+      this.cache,
+      metadata,
+      this
+    );
+
+    // Cache the repository
+    this.repositories.set(entityName, repository);
+
+    return repository;
+  }
+
+  /**
+   * Start a new transaction
+   */
+  transaction(options?: any): Transaction {
+    if (!this.transactionManager) {
+      throw new Error('Transactions are not enabled. Set enableTransactions: true in config.');
+    }
+    return this.transactionManager.createTransaction(options);
+  }
+
+  /**
+   * Execute callback within a transaction
+   */
+  async withTransaction<R>(
+    callback: (transaction: Transaction) => Promise<R>,
+    options?: any
+  ): Promise<R> {
+    if (!this.transactionManager) {
+      throw new Error('Transactions are not enabled. Set enableTransactions: true in config.');
+    }
+    return this.transactionManager.withTransaction(callback, options);
+  }
+
+  /**
+   * Get migration manager
+   */
+  getMigrationManager(): MigrationManager {
+    if (!this.migrationManager) {
+      throw new Error('Migrations are not enabled. Set enableMigrations: true in config.');
+    }
+    return this.migrationManager;
+  }
+
+  /**
+   * Initialize migrations
+   */
+  async initMigrations(): Promise<void> {
+    if (this.migrationManager) {
+      await this.migrationManager.initialize();
+    }
+  }
+
+  /**
+   * Run pending migrations
+   */
+  async runMigrations(): Promise<void> {
+    if (!this.migrationManager) {
+      throw new Error('Migrations are not enabled.');
+    }
+    await this.migrationManager.runPendingMigrations();
+  }
+
+  /**
+   * Generate migration from current schema
+   */
+  async generateMigration(name: string): Promise<void> {
+    if (!this.migrationManager) {
+      throw new Error('Migrations are not enabled.');
+    }
+    await this.migrationManager.generateMigration(name, this.entities);
   }
 
   /**
@@ -125,7 +231,8 @@ export class Repository<T> {
     private sheets: sheets_v4.Sheets,
     private spreadsheetId: string,
     private cache: NodeCache,
-    private metadata: EntityMetadata
+    private metadata: EntityMetadata & { relations?: RelationMetadata[] },
+    private orm: SheetsORM
   ) {
     this.cacheKeyPrefix = `${metadata.name}:`;
   }
@@ -219,6 +326,97 @@ export class Repository<T> {
   }
 
   /**
+   * Find entity by ID with relations
+   */
+  async findByIdWithRelations(id: any, options?: LoadRelationsOptions): Promise<T | null> {
+    const entity = await this.findById(id);
+    if (!entity) return null;
+    
+    return this.loadRelations(entity, options);
+  }
+
+  /**
+   * Find all entities with relations
+   */
+  async findAllWithRelations(options?: LoadRelationsOptions): Promise<T[]> {
+    const entities = await this.findAll();
+    return Promise.all(entities.map(e => this.loadRelations(e, options)));
+  }
+
+  /**
+   * Find entities with relations
+   */
+  async findWithRelations(criteria: Partial<T>, options?: LoadRelationsOptions): Promise<T[]> {
+    const entities = await this.find(criteria);
+    return Promise.all(entities.map(e => this.loadRelations(e, options)));
+  }
+
+  /**
+   * Load relations for an entity
+   */
+  async loadRelations(entity: T, options?: LoadRelationsOptions): Promise<T> {
+    const relations = this.metadata.relations || [];
+    
+    if (relations.length === 0) return entity;
+
+    const depth = options?.depth ?? 1;
+    if (depth <= 0) return entity;
+
+    for (const relation of relations) {
+      // Check if this relation should be included
+      if (options?.include && !options.include.includes(relation.propertyName)) {
+        continue;
+      }
+
+      // Load relation based on type
+      await this.loadRelation(entity, relation, depth);
+    }
+
+    return entity;
+  }
+
+  /**
+   * Load a single relation
+   */
+  private async loadRelation(entity: any, relation: RelationMetadata, depth: number): Promise<void> {
+    const TargetClass = relation.target();
+    const targetRepo = this.orm.getRepository(TargetClass);
+
+    switch (relation.type) {
+      case 'one-to-many':
+        // Find all entities where foreignKey matches our localKey
+        const localValue = entity[relation.localKey];
+        const relatedEntities = await targetRepo.find({ [relation.foreignKey]: localValue } as any);
+        
+        // Load nested relations if depth > 1
+        if (depth > 1) {
+          entity[relation.propertyName] = await Promise.all(
+            relatedEntities.map(e => targetRepo.loadRelations(e, { depth: depth - 1 }))
+          );
+        } else {
+          entity[relation.propertyName] = relatedEntities;
+        }
+        break;
+
+      case 'many-to-one':
+      case 'one-to-one':
+        // Find single entity where localKey matches foreignKey
+        const foreignValue = entity[relation.foreignKey];
+        if (foreignValue) {
+          const relatedEntity = await targetRepo.findById(foreignValue);
+          
+          // Load nested relations if depth > 1
+          if (relatedEntity && depth > 1) {
+            entity[relation.propertyName] = await targetRepo.loadRelations(relatedEntity, { depth: depth - 1 });
+          } else {
+            entity[relation.propertyName] = relatedEntity;
+          }
+        }
+        break;
+    }
+  }
+
+  /**
    * Find all entities
    */
   async findAll(): Promise<T[]> {
@@ -303,9 +501,9 @@ export class Repository<T> {
     return all.length;
   }
 
-  // Helper methods
+  // Helper methods (public for transaction support)
 
-  private entityToRow(entity: Partial<T>): any[] {
+  public entityToRow(entity: Partial<T>): any[] {
     return this.metadata.columns.map(col => {
       const value = (entity as any)[col.propertyName];
       return this.serializeValue(value, col.type);
