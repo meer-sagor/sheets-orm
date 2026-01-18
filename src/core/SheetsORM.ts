@@ -32,12 +32,11 @@ export class SheetsORM {
 
   constructor(config: SheetsORMConfig) {
     // Initialize Google Sheets API
-    const auth = new google.auth.JWT(
-      config.credentials.client_email,
-      undefined,
-      config.credentials.private_key,
-      ['https://www.googleapis.com/auth/spreadsheets']
-    );
+    const auth = new google.auth.JWT({
+      email: config.credentials.client_email,
+      key: config.credentials.private_key,
+      scopes: ['https://www.googleapis.com/auth/spreadsheets'],
+    });
 
     this.sheets = google.sheets({ version: 'v4', auth });
     this.spreadsheetId = config.spreadsheetId;
