@@ -1,3 +1,5 @@
+import 'reflect-metadata';
+
 export interface ColumnMetadata {
   propertyName: string;
   name: string;

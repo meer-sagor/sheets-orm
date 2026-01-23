@@ -1,9 +1,3 @@
-/**
- * Google Sheets ORM - TypeORM-like ORM for Google Sheets
- * 
- * Main export file
- */
-
 // Core exports
 export { SheetsORM, Repository } from './core/SheetsORM';
 export type { SheetsORMConfig } from './core/SheetsORM';
@@ -58,14 +52,3 @@ export {
 export type {
   TransactionOptions
 } from './core/transactions';
-
-// Example entities (optional)
-export { User, Product, Order } from './entities/examples';
-export { 
-  UserWithRelations, 
-  Post, 
-  Comment, 
-  UserProfile,
-  Category,
-  ProductWithCategory
-} from './entities/relations-examples';

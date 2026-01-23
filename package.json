@@ -1,9 +1,14 @@
 {
-  "name": "sheets-orm",
+  "name": "@meersagor/sheets-orm",
   "version": "1.0.0",
-  "description": "TypeORM-like ORM for Google Sheets with caching and advanced query support",
+  "description": "TypeScript ORM for Google Sheets with support for OAuth (multi-tenant) and Service Account modes",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "ts-node-dev --respawn src/examples/usage.ts",
@@ -13,12 +18,22 @@
     "format": "prettier --write \"src/**/*.ts\""
   },
   "keywords": [
+    "google-sheets",
+    "orm",
     "orm",
     "google-sheets",
+    "typescript",
+    "database",
     "database",
     "typescript",
     "cache",
-    "googleapis"
+    "oauth",
+    "multi-tenant",
+    "googleapis",
+    "saas",
+    "spreadsheet",
+    "decorators",
+    "query-builder"
   ],
   "author": "",
   "license": "MIT",
