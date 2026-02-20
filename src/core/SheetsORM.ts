@@ -591,6 +591,98 @@ export class SheetsORM {
   }
 
   /**
+   * Synchronize schema changes — the SheetsORM equivalent of TypeORM synchronize:true.
+   *
+   * Behaviour per sheet:
+   *   • Sheet does NOT exist   → creates it and writes all schema headers (same as syncSchema)
+   *   • Sheet EXISTS, no diff  → no-op (fast, safe to call on every request)
+   *   • Sheet EXISTS, new cols → appends missing column headers to the END of row 1
+   *                              and re-aligns the in-memory entity metadata to match
+   *                              the actual sheet column order so rowToEntity stays correct
+   *
+   * What it will NEVER do (safe for production data):
+   *   • Remove or rename existing columns
+   *   • Move or rewrite existing data rows
+   */
+  async syncSchemaChanges(connectionId?: string): Promise<void> {
+    const sheets = await this.getSheetsClient(connectionId);
+    const spreadsheetId = this.getSpreadsheetId(connectionId);
+
+    const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId });
+    const existingSheetTitles =
+      spreadsheet.data.sheets?.map(s => s.properties?.title) || [];
+
+    for (const [, metadata] of this.entities) {
+      const schemaHeaders = metadata.columns.map(col => col.name);
+
+      if (!existingSheetTitles.includes(metadata.sheetName)) {
+        // ── Sheet does not exist yet ─────────────────────────────────────
+        await sheets.spreadsheets.batchUpdate({
+          spreadsheetId,
+          requestBody: {
+            requests: [{ addSheet: { properties: { title: metadata.sheetName } } }],
+          },
+        });
+        await sheets.spreadsheets.values.update({
+          spreadsheetId,
+          range: `${metadata.sheetName}!A1`,
+          valueInputOption: 'RAW',
+          requestBody: { values: [schemaHeaders] },
+        });
+        console.log(`✅ [syncSchemaChanges] Created sheet "${metadata.sheetName}" with ${schemaHeaders.length} columns`);
+      } else {
+        // ── Sheet exists — diff headers ──────────────────────────────────
+        const headerResponse = await sheets.spreadsheets.values.get({
+          spreadsheetId,
+          range: `${metadata.sheetName}!1:1`,
+        });
+
+        const currentHeaders: string[] =
+          (headerResponse.data.values?.[0] as string[] | undefined) ?? [];
+
+        // Columns in schema but missing from the sheet
+        const missingCols = metadata.columns.filter(
+          col => !currentHeaders.includes(col.name),
+        );
+
+        if (missingCols.length > 0) {
+          const updatedHeaders = [...currentHeaders, ...missingCols.map(c => c.name)];
+          await sheets.spreadsheets.values.update({
+            spreadsheetId,
+            range: `${metadata.sheetName}!A1`,
+            valueInputOption: 'RAW',
+            requestBody: { values: [updatedHeaders] },
+          });
+          console.log(
+            `✅ [syncSchemaChanges] Added ${missingCols.length} column(s) to "${metadata.sheetName}": ` +
+              missingCols.map(c => c.name).join(', '),
+          );
+        }
+
+        // ── Re-align metadata columns to match ACTUAL sheet column order ──
+        // SheetsORM maps row[index] → col[index], so the in-memory metadata
+        // column array MUST match the sheet's physical column order.
+        const finalHeaders = [
+          ...currentHeaders,
+          ...missingCols.map(c => c.name),
+        ].filter(h => !!h);
+
+        const aligned: ColumnMetadata[] = finalHeaders
+          .map(header => metadata.columns.find(col => col.name === header))
+          .filter((col): col is ColumnMetadata => col !== undefined);
+
+        // Append any remaining schema columns not yet in the sheet (safety net)
+        const remaining = metadata.columns.filter(
+          col => !finalHeaders.includes(col.name),
+        );
+        metadata.columns = [...aligned, ...remaining];
+        metadata.primaryKey =
+          metadata.columns.find(col => col.primary)?.propertyName ?? 'id';
+      }
+    }
+  }
+
+  /**
    * Clear cache (mode-aware)
    */
   clearCache(connectionId?: string): void {
