@@ -37,7 +37,7 @@
     "decorators",
     "query-builder"
   ],
-  "author": "",
+  "author": "Meer Sagor",
   "license": "MIT",
   "dependencies": {
     "googleapis": "^167.0.0",
@@ -58,6 +58,9 @@
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.9.3",
     "yalc": "latest"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "engines": {
     "node": ">=18.0.0"

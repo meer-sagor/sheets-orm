@@ -26,7 +26,7 @@ Perfect for:
 ## Installation
 
 ```bash
-npm install @your-org/sheets-orm reflect-metadata googleapis node-cache
+npm install @meersagor/sheets-orm reflect-metadata googleapis node-cache
 ```
 
 Add to your `tsconfig.json`:
@@ -59,7 +59,7 @@ import {
   PrimaryColumn,
   Column,
   getEntitySchema,
-} from '@your-org/sheets-orm';
+} from '@meersagor/sheets-orm';
 
 // 1. Initialize ORM
 const orm = new SheetsORM({
@@ -140,8 +140,8 @@ const products = await productRepo.findAll();
 
 ## Documentation
 
-📖 [Full Documentation](https://github.com/your-org/sheets-orm)  
-🐛 [Report Issues](https://github.com/your-org/sheets-orm/issues)
+📖 [Full Documentation](https://github.com/meer-sagor/sheets-orm)  
+🐛 [Report Issues](https://github.com/meer-sagor/sheets-orm/issues)
 
 ---
 
